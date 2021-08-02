@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"hash/fnv"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -112,7 +113,40 @@ func (c *MRCluster) worker() {
 				// hint: don't encode results returned by ReduceF, and just output
 				// them into the destination file directly so that users can get
 				// results formatted as what they want.
-				panic("YOUR CODE HERE")
+				//panic("YOUR CODE HERE")
+				fs := make([]*os.File, t.nMap)
+				bs := make([]*bufio.Reader, t.nMap)
+				kvMap := make(map[string][]string)
+				for mapNumber := 0; mapNumber < t.nMap; mapNumber++ {
+					rpath := reduceName(t.dataDir, t.jobName, mapNumber, t.taskNumber)
+					fs[mapNumber], bs[mapNumber] = OpenFileAndBuf(rpath)
+					dec := json.NewDecoder(bs[mapNumber])
+					kv := KeyValue{}
+					for {
+						err := dec.Decode(&kv)
+						if err == io.EOF {
+							break
+						} else if err != nil {
+							log.Fatalln(err)
+						}
+						kvMap[kv.Key] = append(kvMap[kv.Key], kv.Value)
+					}
+				}
+				for i := range fs {
+					if err := fs[i].Close(); err != nil {
+						panic(err)
+					}
+				}
+
+				mpath := mergeName(t.dataDir, t.jobName, t.taskNumber)
+				mfs, mbs := CreateFileAndBuf(mpath)
+				for k, vList := range kvMap {
+					result := t.reduceF(k, vList)
+					if _, err := mbs.WriteString(result); err != nil {
+						log.Fatalln(err)
+					}
+				}
+				SafeClose(mfs, mbs)
 			}
 			t.wg.Done()
 		case <-c.exit:
@@ -159,7 +193,29 @@ func (c *MRCluster) run(jobName, dataDir string, mapF MapF, reduceF ReduceF, map
 
 	// reduce phase
 	// YOUR CODE HERE :D
-	panic("YOUR CODE HERE")
+	//panic("YOUR CODE HERE")
+	tasks = make([]*task, 0, nReduce)
+	outputs := make([]string, 0, nReduce)
+	for i := 0; i < nReduce; i++ {
+		t := &task{
+			dataDir:    dataDir,
+			jobName:    jobName,
+			phase:      reducePhase,
+			taskNumber: i,
+			nReduce:    nReduce,
+			nMap:       nMap,
+			reduceF:    reduceF,
+		}
+		t.wg.Add(1)
+		tasks = append(tasks, t)
+		outputs = append(outputs, mergeName(t.dataDir, t.jobName, t.taskNumber))
+		go func() { c.taskCh <- t }()
+	}
+	for _, t := range tasks {
+		t.wg.Wait()
+	}
+	notify <- outputs
+	close(notify)
 }
 
 func ihash(s string) int {
